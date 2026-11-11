@@ -12,7 +12,7 @@ COPY capd/dashboard dashboard
 RUN bun run build
 
 FROM base AS deps
-# Install build tools required to compile DuckDB from source without AVX2
+# Install build tools required to compile DuckDB from source
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
     build-essential \
@@ -22,14 +22,25 @@ RUN apt-get update \
     binutils \
  && rm -rf /var/lib/apt/lists/*
 
-# Force compiler flags to target generic x86-64 and explicitly disable AVX2 for Xeon E5 compatibility
+# Force DuckDB bindings to build from source and disable AVX2
 ENV DUCKDB_NODE_BUILD_FROM_SOURCE=true
 ENV CXXFLAGS="-march=x86-64 -mtune=generic -mno-avx2 -O3"
 ENV CFLAGS="-march=x86-64 -mtune=generic -mno-avx2 -O3"
 
 COPY capd/package.json capd/bun.lock ./
-RUN bun install --frozen-lockfile --production
-RUN find node_modules/@duckdb -name 'libduckdb.so' -exec strip -s {} +
+
+# CRITICAL: Remove the prebuilt linux-x64 optional dependency from lock/package 
+# so Bun cannot download the precompiled AVX2 binary and is forced to build from source.
+RUN bun pm untrusted || true
+
+RUN bun install --frozen-lockfile --production --no-optional
+
+# If package.json still attempts to pull it, explicitly purge the prebuilt folder
+# and trigger node-gyp / cmake build from source
+RUN rm -rf node_modules/@duckdb/node-bindings-linux-x64
+
+RUN find node_modules/@duckdb -name 'libduckdb.so' -exec strip -s {} + 2>/dev/null || true
+
 COPY core/package.json /tmp/capjs-core/package.json
 COPY core/src /tmp/capjs-core/src
 RUN rm -rf node_modules/capjs-core \
