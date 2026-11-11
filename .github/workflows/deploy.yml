@@ -1,8 +1,6 @@
 name: Build Custom Cap Docker Image
 
 on:
-  push:
-    branches: [main, master]
   workflow_dispatch:
 
 jobs:
