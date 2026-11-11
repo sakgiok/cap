@@ -12,35 +12,16 @@ COPY capd/dashboard dashboard
 RUN bun run build
 
 FROM base AS deps
-# Install build tools required to compile DuckDB from source
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-    build-essential \
-    cmake \
-    git \
-    python3 \
-    binutils \
- && rm -rf /var/lib/apt/lists/*
-
-# Force DuckDB bindings to build from source and disable AVX2
-ENV DUCKDB_NODE_BUILD_FROM_SOURCE=true
-ENV CXXFLAGS="-march=x86-64 -mtune=generic -mno-avx2 -O3"
-ENV CFLAGS="-march=x86-64 -mtune=generic -mno-avx2 -O3"
-
+# Install dependencies with scripts ignored so @duckdb/node-bindings 
+# cannot download its prebuilt AVX2 binary from GitHub releases
 COPY capd/package.json capd/bun.lock ./
-RUN bun install --frozen-lockfile --production --no-optional || true
+RUN bun install --frozen-lockfile --production --ignore-scripts
 
-# Ensure the expected directory exists
+# Create the directory structure expected by the package loader
 RUN mkdir -p node_modules/@duckdb/node-bindings-linux-x64
 
-# If building from source generates the binary in a build output directory, copy it here:
-# (If your build places it in build/Release/duckdb.node or similar, copy it to the target path)
-# RUN cp build/Release/duckdb.node node_modules/@duckdb/node-bindings-linux-x64/duckdb.node
-
-# Alternatively, if you want a guaranteed bulletproof fix that bypasses C++ compilation bugs on Bun, 
-# you can use DuckDB-WASM which requires no native compilation at all.
-
-RUN find node_modules/@duckdb -name 'libduckdb.so' -exec strip -s {} + 2>/dev/null || true
+# [Optional] If you have a compiled non-AVX2 duckdb.node binary, copy it here:
+# COPY path/to/your/duckdb.node node_modules/@duckdb/node-bindings-linux-x64/duckdb.node
 
 COPY core/package.json /tmp/capjs-core/package.json
 COPY core/src /tmp/capjs-core/src
