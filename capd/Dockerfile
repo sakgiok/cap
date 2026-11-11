@@ -1,65 +1,47 @@
 # syntax=docker/dockerfile:1
 ARG BUN_VERSION=1.4.4
-ARG DUCKDB_VERSION=v1.1.3
 
-# --- Stage 1: Compile DuckDB from source without AVX2 ---
-FROM oven/bun:${BUN_VERSION}-slim AS duckdb-builder
-ARG DUCKDB_VERSION
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    cmake \
-    git \
-    python3 \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /build
-RUN git clone --depth 1 --branch ${DUCKDB_VERSION} https://github.com/duckdb/duckdb.git .
-
-# Enforce generic x86-64 and explicitly disable AVX2
-ENV CXXFLAGS="-march=x86-64 -mtune=generic -mno-avx2 -O3"
-ENV CFLAGS="-march=x86-64 -mtune=generic -mno-avx2 -O3"
-
-# Build DuckDB Node extension from source
-WORKDIR /build/tools/nodejs
-RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_CXX_FLAGS="${CXXFLAGS}" \
-    -DCMAKE_C_FLAGS="${CFLAGS}"
-RUN cmake --build build --config Release
-
-# --- Stage 2: Build Dashboard ---
-FROM oven/bun:${BUN_VERSION}-slim AS dashboard
+FROM oven/bun:${BUN_VERSION}-slim AS base
 WORKDIR /usr/src/app
+
+FROM base AS dashboard
 COPY capd/package.json capd/bun.lock ./
 RUN bun install --frozen-lockfile
 COPY capd/vite.config.mjs ./
 COPY capd/dashboard dashboard
 RUN bun run build
 
-# --- # Stage 3: Dependencies & Binary Injection ---
-FROM oven/bun:${BUN_VERSION}-slim AS deps
-WORKDIR /usr/src/app
+FROM base AS deps
+# Install system build tools required for compiling native C++ addons via node-gyp
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+    build-essential \
+    python3 \
+    cmake \
+    binutils \
+ && rm -rf /var/lib/apt/lists/*
+
+# Force global compiler flags to target generic x86-64 and explicitly disable AVX2
+ENV CXXFLAGS="-march=x86-64 -mtune=generic -mno-avx2 -O3"
+ENV CFLAGS="-march=x86-64 -mtune=generic -mno-avx2 -O3"
 
 COPY capd/package.json capd/bun.lock ./
-# Let bun install download the standard packages (satisfying all module resolution)
+# 1. Install dependencies normally (fetches modules and satisfies layout)
 RUN bun install --frozen-lockfile --production
 
-# OVERWRITE the downloaded AVX2 binary with our custom-compiled AVX2-free binary
-COPY --from=duckdb-builder /build/tools/nodejs/build/duckdb.node /usr/src/app/node_modules/@duckdb/node-bindings-linux-x64/duckdb.node
+# 2. Recompile the native duckdb bindings package from source using node-gyp with our AVX2-free flags
+RUN cd node_modules/@duckdb/node-bindings \
+ && if [ -f binding.gyp ]; then node-gyp rebuild; fi
 
-# Strip debug symbols to keep image size small
-RUN apt-get update && apt-get install -y --no-install-recommends binutils && \
-    strip -s /usr/src/app/node_modules/@duckdb/node-bindings-linux-x64/duckdb.node && \
-    apt-get purge -y binutils && rm -rf /var/lib/apt/lists/*
+# Strip debug symbols to keep the final image lightweight
+RUN find node_modules/@duckdb -name '*.node' -exec strip -s {} + 2>/dev/null || true
 
 COPY core/package.json /tmp/capjs-core/package.json
 COPY core/src /tmp/capjs-core/src
 RUN rm -rf node_modules/capjs-core \
  && mv /tmp/capjs-core node_modules/capjs-core
 
-# --- Stage 4: Final Release Image ---
-FROM oven/bun:${BUN_VERSION}-slim AS release
+FROM base AS release
 LABEL org.opencontainers.image.source="https://github.com/tiagozip/cap" \
   org.opencontainers.image.url="https://trycap.dev" \
   org.opencontainers.image.title="cap" \
