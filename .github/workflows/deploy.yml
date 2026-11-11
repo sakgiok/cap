@@ -17,8 +17,8 @@ jobs:
       - name: Build custom Cap Docker image (AVX2-free)
         uses: docker/build-push-action@v6
         with:
-          context: .
-          file: ./Dockerfile
+          context: .                  # Usually root workspace if your Dockerfile copies core/ and capd/
+          file: ./capd/Dockerfile     # Path to your Dockerfile (adjust if it's in a different folder)
           load: true
           tags: cap-server:custom
 
